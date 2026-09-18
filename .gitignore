@@ -1,0 +1,5 @@
+/target
+
+# Local downloads (default output dir)
+/downloads
+*.part
