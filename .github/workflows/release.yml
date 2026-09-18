@@ -73,9 +73,9 @@ jobs:
           cp LICENSE README.md "$STAGE/"
           NAME="ytb-wayback-v${VERSION}-${{ matrix.target }}"
           if $IS_WIN; then
-            (cd "$STAGE" && python3 -m zipfile -c "../${NAME}.zip" .)
+            (cd "$STAGE" && python3 -m zipfile -c "../${NAME}.zip" ytb-wayback.exe LICENSE README.md)
           else
-            (cd "$STAGE" && tar -czf "../${NAME}.tar.gz" .)
+            (cd "$STAGE" && tar -czf "../${NAME}.tar.gz" ytb-wayback LICENSE README.md)
           fi
           echo "Packaged dist/${NAME}"
 
@@ -100,9 +100,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar -xzf dist/*-x86_64-unknown-linux-gnu.tar.gz -C /tmp
-          /tmp/ytb-wayback --version | grep -F "${GITHUB_REF_NAME#v}"
-          file /tmp/ytb-wayback
+          mkdir -p /tmp/ytb-verify/x
+          tar -xzf dist/*-x86_64-unknown-linux-gnu.tar.gz -C /tmp/ytb-verify/x
+          /tmp/ytb-verify/x/ytb-wayback --version | grep -F "${GITHUB_REF_NAME#v}"
+          file /tmp/ytb-verify/x/ytb-wayback
 
       - name: Compute checksums
         shell: bash
