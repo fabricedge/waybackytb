@@ -6,6 +6,7 @@ description = "Download YouTube videos preserved by the Wayback Machine"
 keywords = ["youtube", "wayback", "archive", "download", "recovery"]
 categories = ["command-line-utilities", "multimedia"]
 license = "MIT"
+repository = "https://github.com/fabricedge/waybackytb"
 readme = "README.md"
 rust-version = "1.74"
 

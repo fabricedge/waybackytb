@@ -145,14 +145,12 @@ fn run() -> Result<()> {
     }
     if let Some(itag) = &dl.itag {
         if let Some(f) = formats::from_itag(itag) {
-            println!(
-                "  format {} · {} ({}, {}/{})",
-                itag,
-                f.note(),
-                dl.ext,
-                f.vcodec,
-                f.acodec
-            );
+            let audio = if f.acodec == "none" {
+                "video-only, no audio track".to_string()
+            } else {
+                format!("video+audio ({}/{})", f.vcodec, f.acodec)
+            };
+            println!("  format {} · {} ({})", itag, f.note(), audio);
         }
     }
 
@@ -190,6 +188,11 @@ fn write_info_json(
         "archive_stream_url": stream_url,
         "itag": dl.itag,
         "ext": dl.ext,
+        "has_audio": dl.itag
+            .as_deref()
+            .and_then(formats::from_itag)
+            .map(|f| f.acodec != "none")
+            .unwrap_or(true),
         "size_bytes": dl.bytes_total,
         "bytes_written": dl.bytes_written,
         "content_type": dl.content_type,
