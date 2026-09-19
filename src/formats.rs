@@ -113,7 +113,7 @@ pub fn ext_from_content_type(content_type: &str) -> Option<&'static str> {
     match ct {
         "video/mp4" => Some("mp4"),
         "video/webm" => Some("webm"),
-        "video/x-flv" | "application/x-flv" => Some("flv"),
+        "video/x-flv" | "application/x-flv" | "video/flv" => Some("flv"),
         "video/quicktime" => Some("mov"),
         "video/3gpp" => Some("3gp"),
         "audio/mp4" | "audio/m4a" => Some("m4a"),
@@ -152,6 +152,8 @@ mod tests {
     #[test]
     fn content_types() {
         assert_eq!(ext_from_content_type("video/mp4"), Some("mp4"));
+        assert_eq!(ext_from_content_type("video/x-flv"), Some("flv"));
+        assert_eq!(ext_from_content_type("video/flv"), Some("flv"));
         assert_eq!(
             ext_from_content_type("video/webm; charset=binary"),
             Some("webm")

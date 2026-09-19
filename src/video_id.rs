@@ -1,14 +1,41 @@
 //! Extract a YouTube video ID (and optional Wayback snapshot date) from a
 //! messy set of user-provided inputs.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
-/// A parsed video reference: the 11-char video ID plus the optional Wayback
-/// snapshot timestamp (`YYYYMMDDhhmmss`) lifted from an archived URL.
+/// What the user handed us, classified by the shape of the link.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VideoInput {
-    pub id: String,
-    pub date: Option<String>,
+pub enum VideoInput {
+    /// A video identified by its 11-char ID (watch / live / shorts / embed
+    /// page), plus the optional Wayback snapshot timestamp and — when the
+    /// input was an archived page — the exact inner URL the user linked.
+    Video {
+        id: String,
+        date: Option<String>,
+        inner: Option<String>,
+    },
+    /// A raw archived media link (the archive player's `oe_` `videoplayback`
+    /// URL, or any other archived file URL with no resolvable video ID). The
+    /// exact URL is downloaded as-is.
+    Media { url: String, date: Option<String> },
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl VideoInput {
+    /// The Wayback snapshot timestamp lifted from an archived URL, if any.
+    pub fn date(&self) -> Option<&str> {
+        match self {
+            VideoInput::Video { date, .. } | VideoInput::Media { date, .. } => date.as_deref(),
+        }
+    }
+
+    /// The exact inner (non-archive) URL the user linked, when available.
+    pub fn inner(&self) -> Option<&str> {
+        match self {
+            VideoInput::Video { inner, .. } => inner.as_deref(),
+            VideoInput::Media { .. } => None,
+        }
+    }
 }
 
 /// Match exactly an 11-char YouTube video ID.
@@ -24,6 +51,16 @@ fn extract_date(s: &str) -> Option<String> {
     re.captures(s).map(|c| c[1].to_string())
 }
 
+/// Extract the inner URL from an archived link
+/// (`.../web/<timestamp>[<flags>]/<inner-url>`), if present.
+fn extract_inner(s: &str) -> Option<String> {
+    let re = regex::Regex::new(
+        r"(?:web\.archive\.org|archive\.org)/web/[0-9A-Za-z_*]+[0-9A-Za-z_*]*/(https?://.*)",
+    )
+    .ok()?;
+    re.captures(s).map(|c| c[1].to_string())
+}
+
 fn extract_id(s: &str) -> Result<String> {
     let patterns = [
         // Fake url form used by the Wayback internal media index.
@@ -32,8 +69,8 @@ fn extract_id(s: &str) -> Result<String> {
         r"[?&]v=([0-9A-Za-z_\-]{11})",
         // youtu.be short links.
         r"youtu\.be/([0-9A-Za-z_\-]{11})",
-        // Embed / playlist-item paths.
-        r"/(?:embed|v|shorts)/([0-9A-Za-z_\-]{11})",
+        // Embed / playlist-item / live-broadcast / watch paths.
+        r"/(?:embed|v|shorts|live|watch)/([0-9A-Za-z_\-]{11})",
         // Percent-encoded v%3D<id> forms.
         r"v%3[dD]([0-9A-Za-z_\-]{11})",
     ];
@@ -79,6 +116,38 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+/// Honestly note when an archived URL is a YouTube page that can never hold a
+/// single file (channel / user / playlist / search / feed).
+fn looks_like_youtube_non_video(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    [
+        "youtube.com/channel",
+        "youtube.com/user",
+        "youtube.com/c/",
+        "youtube.com/playlist",
+        "youtube.com/@",
+        "youtube.com/results",
+        "youtube.com/feed",
+        "youtube.com/gaming",
+        "youtube.com/live_chat",
+        "?list=",
+    ]
+    .iter()
+    .any(|frag| lower.contains(frag))
+}
+
+/// Whether an archived URL is itself a stored media file (as opposed to a
+/// page). The archive player's "Copy video address" links are `oe_` replay
+/// URLs of `videoplayback` streams.
+fn is_media_like(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("oe_")
+        || lower.contains("videoplayback")
+        || lower.contains("googlevideo")
+        || lower.contains(".c.youtube.com")
+        || lower.contains("o-o.preferred")
+}
+
 /// Parse a user-supplied input into a `VideoInput`.
 ///
 /// Accepted forms:
@@ -87,6 +156,7 @@ fn hex_val(b: u8) -> Option<u8> {
 ///   * a short link:                  `https://youtu.be/C1hjsVLcGFc`
 ///   * an archived playback URL:      `https://web.archive.org/web/20111027231107oe_/http://.../videoplayback?...`
 ///   * an archived watch page:        `https://web.archive.org/web/20241125121251/https://www.youtube.com/watch?v=C1hjsVLcGFc`
+///   * an archived live page:         `https://web.archive.org/web/20230520013354/https://www.youtube.com/live/S2dvG697FQo`
 ///   * a Wayback fake-url media link: `https://web.archive.org/web/2oe_/http://wayback-fakeurl.archive.org/yt/C1hjsVLcGFc`
 pub fn parse(input: &str) -> Result<VideoInput> {
     let raw = input.trim();
@@ -94,20 +164,34 @@ pub fn parse(input: &str) -> Result<VideoInput> {
         bail!("empty input");
     }
     if is_bare_id(raw) {
-        return Ok(VideoInput {
+        return Ok(VideoInput::Video {
             id: raw.to_string(),
             date: None,
+            inner: None,
         });
     }
     let decoded = percent_decode(raw);
     let date = extract_date(&decoded);
-    let id = extract_id(&decoded).map_err(|_| {
-        anyhow!(
-            "could not find a YouTube video ID in input: {input:?}\n\
-             expected a video ID, a youtube.com/youtu.be URL, or a web.archive.org URL"
-        )
-    })?;
-    Ok(VideoInput { id, date })
+    let inner = extract_inner(&decoded);
+    if let Ok(id) = extract_id(&decoded) {
+        return Ok(VideoInput::Video { id, date, inner });
+    }
+    if inner.is_some() {
+        if looks_like_youtube_non_video(&decoded) {
+            bail!(
+                "that looks like a YouTube channel/playlist/search page, not a single video.\n\
+                 hint: pass a watch/live/shorts/embed URL or an 11-char video ID"
+            );
+        }
+        if is_media_like(&decoded) {
+            return Ok(VideoInput::Media { url: decoded, date });
+        }
+    }
+    bail!(
+        "could not find a YouTube video ID in: {raw:?}\n\
+         expected a video ID, a youtube.com/youtu.be URL, an archived media link, \
+         or a web.archive.org watch/live URL"
+    )
 }
 
 #[cfg(test)]
@@ -115,11 +199,18 @@ mod tests {
     use super::*;
 
     fn id(p: &str) -> String {
-        parse(p).unwrap().id
+        match parse(p).unwrap() {
+            VideoInput::Video { id, .. } => id,
+            VideoInput::Media { .. } => panic!("expected a video, got a media link"),
+        }
     }
 
     fn date(p: &str) -> Option<String> {
-        parse(p).unwrap().date
+        parse(p).unwrap().date().map(str::to_string)
+    }
+
+    fn inner(p: &str) -> Option<String> {
+        parse(p).unwrap().inner().map(str::to_string)
     }
 
     #[test]
@@ -127,6 +218,7 @@ mod tests {
         assert_eq!(id("C1hjsVLcGFc"), "C1hjsVLcGFc");
         assert_eq!(id("  97t7Xj_iBv0  "), "97t7Xj_iBv0");
         assert_eq!(date("C1hjsVLcGFc"), None);
+        assert_eq!(inner("C1hjsVLcGFc"), None);
     }
 
     #[test]
@@ -165,6 +257,33 @@ mod tests {
             id("https://www.youtube.com/shorts/C1hjsVLcGFc"),
             "C1hjsVLcGFc"
         );
+        assert_eq!(
+            id("https://www.youtube.com/watch/C1hjsVLcGFc"),
+            "C1hjsVLcGFc"
+        );
+        assert_eq!(
+            id("https://youtube-nocookie.com/embed/C1hjsVLcGFc"),
+            "C1hjsVLcGFc"
+        );
+        assert_eq!(
+            id("https://music.youtube.com/watch?v=C1hjsVLcGFc"),
+            "C1hjsVLcGFc"
+        );
+    }
+
+    #[test]
+    fn live_broadcast_links() {
+        assert_eq!(
+            id("https://www.youtube.com/live/S2dvG697FQo"),
+            "S2dvG697FQo"
+        );
+        assert_eq!(
+            id("https://m.youtube.com/live/S2dvG697FQo?feature=share"),
+            "S2dvG697FQo"
+        );
+        let archived = "https://web.archive.org/web/20230520013354/https://www.youtube.com/live/S2dvG697FQo?feature=share";
+        assert_eq!(id(archived), "S2dvG697FQo");
+        assert_eq!(date(archived), Some("20230520013354".into()));
     }
 
     #[test]
@@ -172,15 +291,51 @@ mod tests {
         let input = "https://web.archive.org/web/20241125121251/https://www.youtube.com/watch?v=C1hjsVLcGFc";
         assert_eq!(id(input), "C1hjsVLcGFc");
         assert_eq!(date(input), Some("20241125121251".into()));
+        assert_eq!(
+            inner(input),
+            Some("https://www.youtube.com/watch?v=C1hjsVLcGFc".into())
+        );
     }
 
     #[test]
-    fn archived_media_link_is_not_resolvable_to_a_video_id() {
+    fn archived_live_page() {
+        let input = "https://web.archive.org/web/20230520013354/https://www.youtube.com/live/S2dvG697FQo?feature=share";
+        assert_eq!(id(input), "S2dvG697FQo");
+        assert_eq!(date(input), Some("20230520013354".into()));
+        assert_eq!(
+            inner(input),
+            Some("https://www.youtube.com/live/S2dvG697FQo?feature=share".into())
+        );
+    }
+
+    #[test]
+    fn archived_media_link_is_direct_media() {
         // A raw archived `videoplayback` URL only carries a random stream id,
-        // not the YouTube video ID, so it cannot resolve on its own.
+        // not the YouTube video ID — it is downloaded exactly as linked.
         let input =
             "https://web.archive.org/web/20111027231107oe_/http://o-o.preferred.example.com/videoplayback?itag=45&id=0b5863b152dc1857&expire=1319781600";
-        assert!(parse(input).is_err());
+        match parse(input).unwrap() {
+            VideoInput::Media { url, date } => {
+                assert_eq!(url, input);
+                assert_eq!(date.as_deref(), Some("20111027231107"));
+            }
+            VideoInput::Video { .. } => panic!("expected a media link"),
+        }
+    }
+
+    #[test]
+    fn non_video_youtube_archive_pages_are_rejected() {
+        for url in [
+            "https://web.archive.org/web/20240101000000/https://www.youtube.com/channel/UCabcxyz123",
+            "https://web.archive.org/web/20240101000000/https://www.youtube.com/playlist?list=PL123",
+            "https://web.archive.org/web/20240101000000/https://www.youtube.com/@dankpods",
+        ] {
+            let err = parse(url).unwrap_err().to_string();
+            assert!(
+                err.contains("channel/playlist") || err.contains("channel/playlist/search"),
+                "unexpected error for {url}: {err}"
+            );
+        }
     }
 
     #[test]
