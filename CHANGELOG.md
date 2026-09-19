@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Support for **live broadcasts** archived under `/live/<id>` (`/watch?v=` and
+  `/live/` forms across `youtube.com` and `www.youtube.com`), with
+  `is_live`/`live_start`/`live_end` metadata.
+- Accept **any archived URL form**: watch, live, shorts, embed, and *direct
+  media links* (the archive player's "Copy video address", an `oe_`
+  `videoplayback` URL) are identified and downloaded as-is; channel,
+  playlist, user and `@handle` pages are rejected with a clear message.
+- `--max-size <SIZE>` (e.g. `150M`, `1.5G`, `500MiB`): picks the largest
+  **stored media copy** that fits the limit; the default stays the largest
+  copy (highest quality). Never truncates (the smallest copy is used when
+  none fits, with a warning).
+- Stored media copies are enumerated from the fake-url index and shown by
+  `--list-snapshots`, with a hint to use `--max-size`.
+- Auto-fallback to the closest capture when a pinned snapshot holds only the
+  page, not the media; empty CDX results are retried with backoff.
+
 ## [0.1.0] - 2026-09-18
 
 ### Added

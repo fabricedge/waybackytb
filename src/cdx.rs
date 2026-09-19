@@ -12,7 +12,7 @@ pub fn print_snapshots(wb: &Wayback, id: &str) -> Result<()> {
     }
 
     println!(
-        "{} archived capture(s) of https://www.youtube.com/watch?v={id}",
+        "{} archived capture(s) for video {id} (watch & live pages)",
         snaps.len()
     );
     let (htmls, media) = snaps.iter().fold((0, 0), |(h, m), s| {
@@ -41,10 +41,35 @@ pub fn print_snapshots(wb: &Wayback, id: &str) -> Result<()> {
             s.mimetype,
         );
     }
+
+    // Stored copies of the actual media (the internal fake-url index).
+    match wb.media_captures(id) {
+        Ok(caps) if !caps.is_empty() => {
+            println!(
+                "\n{} archived media copy(ies) for video {id} (stored video files)",
+                caps.len()
+            );
+            println!("{:<19} {:<16} size", "timestamp", "mimetype");
+            println!("{}", "-".repeat(63));
+            for c in &caps {
+                println!(
+                    "{:<19} {:<16} {}",
+                    pretty_ts(&c.timestamp),
+                    c.mimetype,
+                    crate::download::size_human(c.length)
+                );
+            }
+            println!(
+                "\nhint: by default the largest copy (highest quality) is downloaded; \
+                 use --max-size (e.g. 150M) to pick the largest copy that still fits"
+            );
+        }
+        _ => {}
+    }
     Ok(())
 }
 
-fn pretty_ts(ts: &str) -> String {
+pub(crate) fn pretty_ts(ts: &str) -> String {
     if ts.len() == 14 {
         format!(
             "{}-{}-{} {}:{}:{}",

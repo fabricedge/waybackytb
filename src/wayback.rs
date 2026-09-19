@@ -25,6 +25,16 @@ pub struct Snapshot {
     pub length: String,
 }
 
+/// One stored copy of a video's archived media (the CDX index of the internal
+/// fake-url media path). The archive can hold several stores of the same
+/// video at different times/sizes; the largest is usually highest quality.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaCapture {
+    pub timestamp: String,
+    pub mimetype: String,
+    pub length: u64,
+}
+
 /// HTTP wrapper around archive.org with politeness baked in.
 pub struct Wayback {
     agent: Agent,
@@ -41,6 +51,7 @@ impl Wayback {
             .user_agent(USER_AGENT)
             .timeout_global(Some(Duration::from_secs(120)))
             .timeout_per_call(Some(Duration::from_secs(60)))
+            .max_redirects(5)
             .build()
             .into();
         Self {
@@ -127,6 +138,22 @@ impl Wayback {
     /// for it (`oe_` + original encoding) redirects to the stored
     /// `videoplayback` stream, which supports HTTP Range requests.
     pub fn locate_stream(&self, id: &str, date: Option<&str>) -> Result<String> {
+        match self.resolve_stream(id, date) {
+            Ok(url) => Ok(url),
+            // A pinned snapshot may hold only the page, not the media. Fall
+            // back to the closest capture instead of failing the whole run.
+            Err(first) if date.is_some() => {
+                self.log(format!(
+                    "snapshot {} holds no media for {id}; falling back to the closest capture",
+                    date.unwrap_or_default()
+                ));
+                self.resolve_stream(id, None).map_err(|_| first)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn resolve_stream(&self, id: &str, date: Option<&str>) -> Result<String> {
         let url = Self::replay_url(
             date,
             "oe_",
@@ -168,10 +195,143 @@ impl Wayback {
         Ok(stream_url)
     }
 
+    /// List every stored copy of a video's archived media together with its
+    /// size, via the CDX index of the internal fake-url path. The archive also
+    /// keeps a tiny `application/json` index stub under the same key — that is
+    /// filtered out so only real media remains.
+    ///
+    /// The index occasionally answers with an empty `[]` while the backend is
+    /// under load, so an empty result is retried with backoff before giving up.
+    pub fn media_captures(&self, id: &str) -> Result<Vec<MediaCapture>> {
+        let url = format!("wayback-fakeurl.archive.org/yt/{id}");
+        let mut delay = self.base_delay;
+        let mut attempts = 0;
+        loop {
+            let resp = self
+                .with_retries(|| {
+                    self.agent
+                        .get(&format!("{BASE}/cdx/search/cdx"))
+                        .query("url", &url)
+                        .query("output", "json")
+                        .query("fl", "timestamp,original,statuscode,mimetype,digest,length")
+                        .query("filter", "statuscode:200")
+                        .query("collapse", "digest")
+                        .query("limit", "500")
+                        .call()
+                })
+                .with_context(|| format!("CDX query failed for media of {id}"))?;
+            let mut cdx = String::new();
+            resp.into_body()
+                .into_reader()
+                .read_to_string(&mut cdx)
+                .context("reading CDX response")?;
+            let mut out: Vec<MediaCapture> = Vec::new();
+            for (timestamp, _status, mimetype, length) in parse_cdx(&cdx) {
+                if !mimetype.contains("video") {
+                    continue;
+                }
+                if let Ok(length) = length.parse::<u64>() {
+                    out.push(MediaCapture {
+                        timestamp,
+                        mimetype,
+                        length,
+                    });
+                }
+            }
+            out.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            if !out.is_empty() || attempts >= self.retries {
+                return Ok(out);
+            }
+            attempts += 1;
+            self.log(format!(
+                "media index returned no rows for {id}, retrying ({attempts}); body: {:?}",
+                &cdx[..cdx.len().min(140)]
+            ));
+            std::thread::sleep(delay);
+            delay *= 2;
+        }
+    }
+
+    /// Choose which stored media copy to download.
+    ///
+    /// The default is the **largest** store (highest quality). With a size cap
+    /// the largest store still under the cap wins; if none fits, the smallest
+    /// is returned so the caller can warn and still download *something*.
+    pub fn select_capture(caps: &[MediaCapture], max_size: Option<u64>) -> Option<&MediaCapture> {
+        if caps.is_empty() {
+            return None;
+        }
+        match max_size {
+            None => caps.iter().max_by_key(|c| c.length),
+            Some(limit) => caps
+                .iter()
+                .filter(|c| c.length <= limit)
+                .max_by_key(|c| c.length)
+                .or_else(|| caps.iter().min_by_key(|c| c.length)),
+        }
+    }
+
+    /// The snapshot timestamp embedded in a resolved stream URL, if any.
+    pub fn stream_timestamp(url: &str) -> Option<String> {
+        let re = regex::Regex::new(r"/web/(\d{14})").ok()?;
+        re.captures(url).map(|c| c[1].to_string())
+    }
+
+    /// Verify a raw archived media URL is reachable and really serves media
+    /// (not an HTML error page). Returns the final URL after redirects plus
+    /// the served content type.
+    pub fn probe(&self, url: &str) -> Result<(String, String)> {
+        self.log(format!("probing archived media: {url}"));
+        let resp = self
+            .with_retries(|| {
+                self.agent
+                    .get(url)
+                    .header("Accept", "video/*")
+                    .header("Range", "bytes=0-0")
+                    .call()
+            })
+            .context("could not reach archived media")?;
+        let final_url = resp.get_uri().to_string();
+        let ctype = Self::content_type(&resp);
+        if ctype.contains("html") || ctype.starts_with("text/") || ctype.is_empty() {
+            bail!(
+                "no archived media stream at {url} (the archive holds only a page for this link)"
+            );
+        }
+        Ok((final_url, ctype))
+    }
+
+    /// Force a snapshot timestamp into an archived URL, keeping any replay
+    /// flag (`oe_`, `id_`, `if_`) that followed the old timestamp.
+    pub fn pin_date(url: &str, date: &str) -> Result<String> {
+        let re =
+            regex::Regex::new(r"(web\.archive\.org|archive\.org)/web/([0-9]+)([0-9A-Za-z_*]*)")
+                .unwrap();
+        if re.is_match(url) {
+            Ok(re
+                .replace(url, |caps: &regex::Captures<'_>| {
+                    format!("{}/web/{}{}", &caps[1], date, &caps[3])
+                })
+                .into_owned())
+        } else {
+            bail!("cannot pin a snapshot date on {url:?}: not a web.archive.org URL")
+        }
+    }
+
     /// Fetch the raw (`if_`) archived watch page. Returns `None` when the
     /// snapshot holds no watch page we can parse (metadata is optional).
-    pub fn fetch_archived_page(&self, id: &str, date: Option<&str>) -> Result<Option<String>> {
-        let watch_url = format!("https://www.youtube.com/watch?v={id}");
+    /// When the user linked a specific inner URL, it is replayed as-is so live
+    /// broadcasts (`/live/<id>`) keep their `ytInitialPlayerResponse`.
+    pub fn fetch_archived_page(
+        &self,
+        id: &str,
+        date: Option<&str>,
+        prefer_inner: Option<&str>,
+    ) -> Result<Option<String>> {
+        let watch_url = match prefer_inner {
+            Some(inner) => inner.to_string(),
+            None => format!("https://www.youtube.com/watch?v={id}"),
+        };
         let url = Self::replay_url(date, "if_", &watch_url);
         self.log(format!("fetching archived watch page: {url}"));
 
@@ -205,9 +365,14 @@ impl Wayback {
     pub fn list_snapshots(&self, id: &str) -> Result<Vec<Snapshot>> {
         let mut seen: std::collections::HashSet<String> = Default::default();
         let mut out = Vec::new();
-        // The archive crawled both the bare and www hosts over the years.
-        for host in ["www.youtube.com", "youtube.com"] {
-            let url = format!("{host}/watch?v={id}");
+        // The archive crawled both the bare and www hosts over the years, and
+        // live broadcasts are caught under `/live/<id>` rather than `/watch?v=`.
+        for url in [
+            format!("www.youtube.com/watch?v={id}"),
+            format!("youtube.com/watch?v={id}"),
+            format!("www.youtube.com/live/{id}"),
+            format!("youtube.com/live/{id}"),
+        ] {
             let resp = self
                 .with_retries(|| {
                     self.agent
@@ -220,7 +385,7 @@ impl Wayback {
                         .query("limit", "500")
                         .call()
                 })
-                .with_context(|| format!("CDX query failed for {host}"))?;
+                .with_context(|| format!("CDX query failed for {url}"))?;
             let mut cdx = String::new();
             resp.into_body()
                 .into_reader()
@@ -299,5 +464,85 @@ mod tests {
             Wayback::replay_url(Some("20241125121251"), "oe_", "http://a/yt/x"),
             "https://web.archive.org/web/20241125121251oe_/http://a/yt/x"
         );
+    }
+
+    fn cap(ts: &str, len: u64) -> MediaCapture {
+        MediaCapture {
+            timestamp: ts.to_string(),
+            mimetype: "video/webm".into(),
+            length: len,
+        }
+    }
+
+    #[test]
+    fn select_capture_default_is_largest() {
+        let caps = vec![cap("1", 100), cap("2", 5_000), cap("3", 300)];
+        let got = Wayback::select_capture(&caps, None).unwrap();
+        assert_eq!(got.timestamp, "2");
+        assert_eq!(got.length, 5_000);
+    }
+
+    #[test]
+    fn select_capture_respects_cap() {
+        let caps = vec![cap("1", 100), cap("2", 5_000), cap("3", 300)];
+        let got = Wayback::select_capture(&caps, Some(400)).unwrap();
+        assert_eq!(got.timestamp, "3");
+        assert_eq!(got.length, 300);
+    }
+
+    #[test]
+    fn select_capture_falls_back_to_smallest_when_none_fits() {
+        let caps = vec![cap("1", 100), cap("2", 5_000), cap("3", 300)];
+        let got = Wayback::select_capture(&caps, Some(10)).unwrap();
+        assert_eq!(got.timestamp, "1");
+        assert_eq!(got.length, 100);
+    }
+
+    #[test]
+    fn select_capture_empty() {
+        assert_eq!(Wayback::select_capture(&[], None), None);
+    }
+
+    #[test]
+    fn stream_timestamp_from_url() {
+        assert_eq!(
+            Wayback::stream_timestamp(
+                "https://web.archive.org/web/20111027231107oe_/http://o-o.preferred..../videoplayback"
+            ),
+            Some("20111027231107".into())
+        );
+        assert_eq!(
+            Wayback::stream_timestamp("https://web.archive.org/web/2oe_/http://a/yt/x"),
+            None
+        );
+    }
+
+    #[test]
+    fn pin_date_replaces_snapshot_token() {
+        assert_eq!(
+            Wayback::pin_date(
+                "https://web.archive.org/web/20111027231107oe_/http://a/videoplayback?itag=5",
+                "20250228024155"
+            )
+            .unwrap(),
+            "https://web.archive.org/web/20250228024155oe_/http://a/videoplayback?itag=5"
+        );
+        assert_eq!(
+            Wayback::pin_date(
+                "https://web.archive.org/web/2oe_/http://a/videoplayback",
+                "20241125121251"
+            )
+            .unwrap(),
+            "https://web.archive.org/web/20241125121251oe_/http://a/videoplayback"
+        );
+        assert_eq!(
+            Wayback::pin_date(
+                "https://web.archive.org/web/20230520013354/https://www.youtube.com/live/S2dvG697FQo",
+                "20241125121251"
+            )
+            .unwrap(),
+            "https://web.archive.org/web/20241125121251/https://www.youtube.com/live/S2dvG697FQo"
+        );
+        assert!(Wayback::pin_date("https://youtu.be/abc", "20240101000000").is_err());
     }
 }

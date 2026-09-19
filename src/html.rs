@@ -14,6 +14,9 @@ pub struct VideoMetadata {
     pub upload_date: Option<String>,
     pub duration: Option<u64>,
     pub thumbnail: Option<String>,
+    pub is_live: Option<bool>,
+    pub live_start: Option<String>,
+    pub live_end: Option<String>,
 }
 
 /// JSON may be assigned as `var ytInitialPlayerResponse = {...};`, as
@@ -148,6 +151,20 @@ pub fn extract_metadata(html: &str) -> VideoMetadata {
             &["microformat", "playerMicroformatRenderer", "publishDate"],
         )
         .map(|d| d.chars().take(10).collect());
+        meta.is_live = pr
+            .pointer("/videoDetails/isLive")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                pr.pointer("/videoDetails/isLiveContent")
+                    .and_then(|v| v.as_bool())
+            });
+        let live = pr.pointer("/microformat/playerMicroformatRenderer/liveBroadcastDetails");
+        meta.live_start = live
+            .and_then(|v| v.get("startTimestamp"))
+            .and_then(|v| v.as_str().map(str::to_string));
+        meta.live_end = live
+            .and_then(|v| v.get("endTimestamp"))
+            .and_then(|v| v.as_str().map(str::to_string));
     }
 
     if meta.title.is_none() {
@@ -193,6 +210,13 @@ pub fn extract_metadata(html: &str) -> VideoMetadata {
             }
         }
     }
+    // Live broadcasts have liveBroadcastDetails.startTimestamp instead of a
+    // publishDate; fall back to it so a sensible upload date is still found.
+    if meta.upload_date.is_none() {
+        if let Some(start) = &meta.live_start {
+            meta.upload_date = Some(start.chars().take(10).collect());
+        }
+    }
     meta
 }
 
@@ -232,6 +256,23 @@ mod tests {
         assert_eq!(m.upload_date.as_deref(), Some("2005-04-23"));
         assert_eq!(m.duration, Some(19));
         assert_eq!(m.channel_id.as_deref(), Some("UC4QobU6STFB0P71PMvOGN5A"));
+    }
+
+    #[test]
+    fn metadata_from_live_broadcast() {
+        let page = r#"<!doctype html><html><head><title>Minecraft stream - YouTube</title></head><body>
+<script>var ytInitialPlayerResponse = {"videoDetails":{"title":"САМЫЙ ЛУЧШИЙ СТРИМ","author":"SomeChannel","channelId":"UCxxxxxxxxxxxxxxxxxxxxxx","isLive":true,"isLiveContent":true,"thumbnail":{"thumbnails":[{"url":"https://i.ytimg.com/vi/S2dvG697FQo/hqdefault.jpg"}]}},"microformat":{"playerMicroformatRenderer":{"liveBroadcastDetails":{"isLiveNow":true,"startTimestamp":"2023-05-19T15:01:11+00:00"}}}};</script>
+</body></html>"#;
+        let m = extract_metadata(page);
+        assert_eq!(m.is_live, Some(true));
+        assert_eq!(m.live_start.as_deref(), Some("2023-05-19T15:01:11+00:00"));
+        assert_eq!(m.live_end, None);
+        // No publishDate -> upload_date falls back to the broadcast start.
+        assert_eq!(m.upload_date.as_deref(), Some("2023-05-19"));
+        let m2 = extract_metadata(
+            r#"<script>var ytInitialPlayerResponse={"videoDetails":{"isLiveContent":false},"microformat":{"playerMicroformatRenderer":{}}};</script>"#,
+        );
+        assert_eq!(m2.is_live, Some(false));
     }
 
     #[test]
