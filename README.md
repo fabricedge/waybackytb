@@ -22,23 +22,23 @@ including a `SHA256SUMS.txt` for verification.
 
 | Platform | Artifact |
 | --- | --- |
-| Linux x86\_64 (glibc ≥ 2.31) | `ytb-wayback-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux x86\_64 (static musl) | `ytb-wayback-v0.1.0-x86_64-unknown-linux-musl.tar.gz` |
-| Windows x86\_64 | `ytb-wayback-v0.1.0-x86_64-pc-windows-gnu.zip` |
+| Linux x86\_64 (glibc ≥ 2.31) | `ytb-wayback-v0.2.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux x86\_64 (static musl) | `ytb-wayback-v0.2.0-x86_64-unknown-linux-musl.tar.gz` |
+| Windows x86\_64 | `ytb-wayback-v0.2.0-x86_64-pc-windows-gnu.zip` |
 
 ### Install
 
 ```bash
 # Linux (extract to ~/.local/bin or anywhere in PATH)
 curl -fsSL -o /tmp/ytb-wayback.tar.gz \
-  https://github.com/fabricedge/waybackytb/releases/download/v0.1.0/ytb-wayback-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+  https://github.com/fabricedge/waybackytb/releases/download/v0.2.0/ytb-wayback-v0.2.0-x86_64-unknown-linux-musl.tar.gz
 tar -xzf /tmp/ytb-wayback.tar.gz -C ~/.local/bin
 ```
 
 ```powershell
 # Windows (extract ytb-wayback.exe and add it to PATH)
 curl.exe -fsSL -o ytb-wayback.zip `
-  https://github.com/fabricedge/waybackytb/releases/download/v0.1.0/ytb-wayback-v0.1.0-x86_64-pc-windows-gnu.zip
+  https://github.com/fabricedge/waybackytb/releases/download/v0.2.0/ytb-wayback-v0.2.0-x86_64-pc-windows-gnu.zip
 tar -xf ytb-wayback.zip
 ```
 
