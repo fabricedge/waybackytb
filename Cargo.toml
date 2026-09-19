@@ -1,6 +1,6 @@
 [package]
 name = "ytb-wayback"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Download YouTube videos preserved by the Wayback Machine"
 keywords = ["youtube", "wayback", "archive", "download", "recovery"]

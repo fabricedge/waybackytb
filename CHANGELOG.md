@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-09-19
 
 ### Added
 
@@ -23,6 +23,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--list-snapshots`, with a hint to use `--max-size`.
 - Auto-fallback to the closest capture when a pinned snapshot holds only the
   page, not the media; empty CDX results are retried with backoff.
+- Pull request policies (`CONTRIBUTING.md`), a PR template, and CI checks
+  validating PR titles and documentation sync on `src/` changes.
 
 ## [0.1.0] - 2026-09-18
 
@@ -48,4 +50,5 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CI (fmt, clippy `-D warnings`, tests) and a release workflow publishing
   Linux (gnu + musl) and Windows binaries with `SHA256SUMS`.
 
+[0.2.0]: https://github.com/fabricedge/waybackytb/releases/tag/v0.2.0
 [0.1.0]: https://github.com/fabricedge/waybackytb/releases/tag/v0.1.0
