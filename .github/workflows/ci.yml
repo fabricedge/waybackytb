@@ -10,6 +10,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  pr-metadata:
+    name: PR title + CHANGELOG
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR title prefix
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const re = /^(feat|fix|docs|chore|test|ci|refactor)(\([a-z0-9-]+\))?: .+/;
+            if (!re.test(title)) {
+              core.setFailed(
+                `PR title "${title}" must start with a conventional prefix: ` +
+                `feat: fix: docs: chore: test: ci: refactor: (optionally scope, e.g. feat(cli): ...)`
+              );
+            }
+
+      - name: Require CHANGELOG update when src changes
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE...$HEAD")
+          if echo "$CHANGED" | grep -q '^src/'; then
+            grep -q '^CHANGELOG.md$' <<<"$CHANGED" || { echo "::error::src/ changed: add a CHANGELOG.md entry under [Unreleased]"; exit 1; }
+          fi
+
+      - name: Require README/help sync when the CLI surface changes
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE...$HEAD")
+          if echo "$CHANGED" | grep -q '^src/main.rs$'; then
+            grep -q '^README.md$' <<<"$CHANGED" || { echo "::error::src/main.rs changed (CLI): update README.md (help/options) in the same PR"; exit 1; }
+          fi
   check:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
